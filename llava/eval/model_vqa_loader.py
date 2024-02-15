@@ -64,7 +64,7 @@ class CustomDataset(Dataset):
 def collate_fn(batch):
     input_ids, image_tensors, image_sizes = zip(*batch)
     input_ids = torch.stack(input_ids, dim=0)
-    image_tensors = torch.stack(image_tensors, dim=0)
+    # image_tensors = torch.stack(image_tensors, dim=0)
     return input_ids, image_tensors, image_sizes
 
 
@@ -98,13 +98,15 @@ def eval_model(args):
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
         idx = line["question_id"]
         cur_prompt = line["text"]
-
+        # print(len(image_tensor))
+        # for i in image_tensor:
+        #     print(i.shape)
         input_ids = input_ids.to(device='cuda', non_blocking=True)
 
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
-                images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
+                images=image_tensor,
                 image_sizes=image_sizes,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,

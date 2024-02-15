@@ -3,6 +3,7 @@ import torch.nn as nn
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
+from .sam import build_sam_vit_b
 
 class BaseProcessor:
     def __init__(self):
@@ -30,9 +31,9 @@ class SimpleCLIPImageProcessor(BaseImageProcessor):
         self.transform = transforms.Compose(
             [
                 transforms.Resize(
-                    image_size, interpolation=InterpolationMode.BICUBIC
+                    (image_size, image_size), interpolation=InterpolationMode.BICUBIC
                 ),
-                transforms.CenterCrop(image_size),
+                # transforms.CenterCrop(image_size),
                 transforms.ToTensor(),
                 self.normalize,
             ]
@@ -51,7 +52,9 @@ class SimpleCLIPImageProcessor(BaseImageProcessor):
             images_tensor = self.transform(images)[None]
         return {'pixel_values': images_tensor}
 
-class CLIPVisionTower(nn.Module):
+class CLIPSAMVisionTower(nn.Module):
+    sam_checkpoint='./ckpts/sam/sam_vision_tower.pt'
+    clip_checkpoint='./ckpts/clip-vit-large-patch14'
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
 
@@ -66,17 +69,22 @@ class CLIPVisionTower(nn.Module):
         elif getattr(args, 'unfreeze_mm_vision_tower', False):
             self.load_model()
         else:
-            self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name)
+            self.cfg_only = CLIPVisionConfig.from_pretrained(self.clip_checkpoint)
 
     def load_model(self, device_map=None):
         if self.is_loaded:
             print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
             return
 
-        image_processor = CLIPImageProcessor.from_pretrained(self.vision_tower_name)
-        self.image_processor = SimpleCLIPImageProcessor(image_processor.crop_size['height'])
-        self.vision_tower = CLIPVisionModel.from_pretrained(self.vision_tower_name, device_map=device_map)
+        image_processor = CLIPImageProcessor.from_pretrained(self.clip_checkpoint)
+        image_processor = SimpleCLIPImageProcessor(image_processor.crop_size['height'])
+        image_processor_high = SimpleCLIPImageProcessor(1024)
+        self.image_processor = [image_processor, image_processor_high]
+        self.vision_tower = CLIPVisionModel.from_pretrained(self.clip_checkpoint)
+        self.vision_tower_high = build_sam_vit_b()
+        self.vision_tower_high.load_state_dict(torch.load(self.sam_checkpoint))
         self.vision_tower.requires_grad_(False)
+        self.vision_tower_high.requires_grad_(False)
 
         self.is_loaded = True
 
@@ -95,12 +103,23 @@ class CLIPVisionTower(nn.Module):
         if type(images) is list:
             image_features = []
             for image in images:
-                image_forward_out = self.vision_tower(image.to(device=self.device, dtype=self.dtype).unsqueeze(0), output_hidden_states=True)
-                image_feature = self.feature_select(image_forward_out).to(image.dtype)
-                image_features.append(image_feature)
+                tmp_image_feature = []
+                # print(image[0])
+                image_forward_out = self.vision_tower(image[0].to(device=self.device, dtype=self.dtype).unsqueeze(0), output_hidden_states=True)
+                image_feature = self.feature_select(image_forward_out).to(self.dtype)
+                tmp_image_feature.append(image_feature)
+                tmp_image_feature.append(self.vision_tower_high(image[1].to(device=self.device, dtype=self.dtype).unsqueeze(0)).flatten(2).permute(0, 2, 1))
+                # image_feature = self.feature_select(image_forward_out).to(image.dtype)
+                image_features.append(torch.cat(tmp_image_feature, dim=-1))
+            image_features = torch.cat(image_features)
         else:
-            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
-            image_features = self.feature_select(image_forward_outs).to(images.dtype)
+            tmp_image_feature = []
+            image_forward_outs = self.vision_tower(images[0].to(device=self.device, dtype=self.dtype), output_hidden_states=True)
+            image_feature = self.feature_select(image_forward_outs).to(self.dtype)
+            # image_feature.append(self.vision_tower(images[0].to(device=self.device, dtype=self.dtype), True)[0])
+            tmp_image_feature.append(image_feature)
+            image_feature.append(self.vision_tower_high(images[1].to(device=self.device, dtype=self.dtype)).flatten(2).permute(0, 2, 1))
+            image_features.append(torch.cat(tmp_image_feature, dim=-1))
 
         return image_features
 
@@ -125,7 +144,7 @@ class CLIPVisionTower(nn.Module):
 
     @property
     def hidden_size(self):
-        return self.config.hidden_size
+        return self.config.hidden_size + self.vision_tower_high.hidden_size
 
     @property
     def num_patches_per_side(self):

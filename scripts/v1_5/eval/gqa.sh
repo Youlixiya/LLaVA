@@ -1,24 +1,27 @@
 #!/bin/bash
 
-gpu_list="${CUDA_VISIBLE_DEVICES:-0}"
+gpu_list="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 IFS=',' read -ra GPULIST <<< "$gpu_list"
 
 CHUNKS=${#GPULIST[@]}
 
-CKPT="llava-v1.5-13b"
+# CKPT="llava-clip-vit-l-384-tinyllama-1.1b-3t"
+# CKPT="llava-clip-vit-l-224-qwen-v1.5-1.8b"
+# CKPT="llava-siglip-vit-l-384-tinyllama-1.1b-chat"
+CKPT="llava-clip-sam-tinyllama-1.1b-chat"
 SPLIT="llava_gqa_testdev_balanced"
 GQADIR="./playground/data/eval/gqa/data"
 
 for IDX in $(seq 0 $((CHUNKS-1))); do
     CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python -m llava.eval.model_vqa_loader \
-        --model-path liuhaotian/llava-v1.5-13b \
+        --model-path ./checkpoints/llava-clip-sam-tinyllama-1.1b-chat \
         --question-file ./playground/data/eval/gqa/$SPLIT.jsonl \
         --image-folder ./playground/data/eval/gqa/data/images \
         --answers-file ./playground/data/eval/gqa/answers/$SPLIT/$CKPT/${CHUNKS}_${IDX}.jsonl \
         --num-chunks $CHUNKS \
         --chunk-idx $IDX \
         --temperature 0 \
-        --conv-mode vicuna_v1 &
+        --conv-mode llava_llama_2 &
 done
 
 wait

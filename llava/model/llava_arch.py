@@ -21,7 +21,8 @@ import torch.nn as nn
 from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_projector.builder import build_vision_projector
 
-from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, \
+    DEFAULT_REF_START_TOKEN, DEFAULT_REF_END_TOKEN, DEFAULT_BOX_START_TOKEN, DEFAULT_BOX_END_TOKEN
 
 from llava.mm_utils import get_anyres_image_grid_shape
 
@@ -150,12 +151,17 @@ class LlavaMetaForCausalLM(ABC):
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
-        if type(images) is list or images.ndim == 5:
-            if type(images) is list:
+        if type(images) is list:
+            if type(images) is list and type(images[0]) is not list:
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
-            concat_images = torch.cat([image for image in images], dim=0)
+                concat_images = torch.cat([image for image in images], dim=0)
+            else:
+                concat_images = images
             image_features = self.encode_images(concat_images)
-            split_sizes = [image.shape[0] for image in images]
+            if type(images) is list:
+                 split_sizes = [len(image) // 2 for image in images]
+            else:
+                split_sizes = [image.shape[0] for image in images]
             image_features = torch.split(image_features, split_sizes, dim=0)
             mm_patch_merge_type = getattr(self.config, 'mm_patch_merge_type', 'flat')
             image_aspect_ratio = getattr(self.config, 'image_aspect_ratio', 'square')
@@ -324,6 +330,12 @@ class LlavaMetaForCausalLM(ABC):
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
     def initialize_vision_tokenizer(self, model_args, tokenizer):
+        if model_args.mm_use_ref_token:
+            tokenizer.add_tokens([DEFAULT_REF_START_TOKEN, DEFAULT_REF_END_TOKEN], special_tokens=True)
+            self.resize_token_embeddings(len(tokenizer))
+        if model_args.mm_use_box_token:
+            tokenizer.add_tokens([DEFAULT_BOX_START_TOKEN, DEFAULT_BOX_END_TOKEN], special_tokens=True)
+            self.resize_token_embeddings(len(tokenizer))
         if model_args.mm_use_im_patch_token:
             tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
             self.resize_token_embeddings(len(tokenizer))
